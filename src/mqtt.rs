@@ -1,4 +1,4 @@
-use std::{sync::mpsc::Sender, thread, time::Duration};
+use std::sync::mpsc::Sender;
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -38,27 +38,30 @@ pub async fn mqtt_thread(
         },
     ))
     .unwrap();
-    wifi.start().await.unwrap();
-    wifi.connect().await.unwrap();
-    wifi.wait_netif_up().await.unwrap();
+    loop {
+        if !wifi.is_connected().unwrap() {
+            tx.send(StateEvent::WifiConnected(false)).unwrap();
+            wifi.start().await.unwrap();
+            wifi.connect().await.unwrap();
+            wifi.wait_netif_up().await.unwrap();
+            tx.send(StateEvent::WifiConnected(true)).unwrap();
+        }
 
-    let config = MqttClientConfiguration {
-        client_id: MQTT_CLIENT_ID.into(),
-        ..Default::default()
-    };
-    let (mut client, mut connection) =
-        EspMqttClient::new_with_conn(MQTT_ENDPOINT, &config).unwrap();
+        let config = MqttClientConfiguration {
+            client_id: MQTT_CLIENT_ID.into(),
+            ..Default::default()
+        };
+        let (mut client, mut connection) =
+            EspMqttClient::new_with_conn(MQTT_ENDPOINT, &config).unwrap();
 
-    while let Some(msg) = connection.next() {
-        match msg {
-            Err(e) => log::error!("MQTT Error: {:?}", e),
-            Ok(msg) => {
-                let event: esp_idf_svc::mqtt::client::Event<MessageImpl> = msg;
+        while let Some(msg) = connection.next() {
+            match msg {
+                Err(e) => log::error!("MQTT Error: {:?}", e),
+                Ok(msg) => {
+                    let event: esp_idf_svc::mqtt::client::Event<MessageImpl> = msg;
 
-                match event {
-                    esp_idf_svc::mqtt::client::Event::Received(msg) => {
-                        log::info!("Received message: {:?}", msg);
-                        match msg.topic() {
+                    match event {
+                        esp_idf_svc::mqtt::client::Event::Received(msg) => match msg.topic() {
                             Some("villamos") => {
                                 let payload_raw = String::from_utf8(msg.data().to_vec()).unwrap();
                                 let payload = serde_json::from_str::<Tram>(&payload_raw).unwrap();
@@ -71,36 +74,32 @@ pub async fn mqtt_thread(
                                 log::info!("Payload: {:?}", payload);
                                 tx.send(StateEvent::MetroStateChanged(payload)).unwrap();
                             }
-                            _ => {}
+                            _ => log::info!("Received unknown message: {:?}", msg),
+                        },
+                        esp_idf_svc::mqtt::client::Event::Connected(_) => {
+                            log::info!("Connected to MQTT broker");
+                            client
+                                .subscribe("villamos", esp_idf_svc::mqtt::client::QoS::AtMostOnce)
+                                .unwrap();
+                            client
+                                .subscribe("metro", esp_idf_svc::mqtt::client::QoS::AtMostOnce)
+                                .unwrap();
+                            tx.send(StateEvent::MqttConnected(true)).unwrap();
                         }
+                        esp_idf_svc::mqtt::client::Event::Disconnected => {
+                            log::info!("Disconnected from MQTT broker");
+                            tx.send(StateEvent::MqttConnected(false)).unwrap();
+                        }
+                        esp_idf_svc::mqtt::client::Event::Subscribed(topic) => {
+                            log::info!("Subscribed to topic: {:?}", topic);
+                        }
+                        esp_idf_svc::mqtt::client::Event::Unsubscribed(topic) => {
+                            log::info!("Unsubscribed from topic: {:?}", topic);
+                        }
+                        _ => {}
                     }
-                    esp_idf_svc::mqtt::client::Event::Connected(_) => {
-                        log::info!("Connected to MQTT broker");
-                        client
-                            .subscribe("villamos", esp_idf_svc::mqtt::client::QoS::AtMostOnce)
-                            .unwrap();
-                        client
-                            .subscribe("metro", esp_idf_svc::mqtt::client::QoS::AtMostOnce)
-                            .unwrap();
-                        tx.send(StateEvent::MqttConnected(true)).unwrap();
-                    }
-                    esp_idf_svc::mqtt::client::Event::Disconnected => {
-                        log::info!("Disconnected from MQTT broker");
-                        tx.send(StateEvent::MqttConnected(false)).unwrap();
-                    }
-                    esp_idf_svc::mqtt::client::Event::Subscribed(topic) => {
-                        log::info!("Subscribed to topic: {:?}", topic);
-                    }
-                    esp_idf_svc::mqtt::client::Event::Unsubscribed(topic) => {
-                        log::info!("Unsubscribed from topic: {:?}", topic);
-                    }
-                    _ => {}
                 }
             }
         }
-    }
-
-    loop {
-        thread::sleep(Duration::from_secs(1));
     }
 }
