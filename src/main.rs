@@ -1,4 +1,4 @@
-use std::thread;
+use std::{sync::mpsc, thread};
 
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -9,9 +9,9 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     timer::EspTaskTimerService,
 };
-
 mod draw;
 mod mqtt;
+mod state;
 
 fn main() {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -35,6 +35,8 @@ fn main() {
     let cs2 = peripherals.pins.gpio26;
     let spi2 = peripherals.spi2;
 
+    let (tx, rx) = mpsc::channel::<state::StateEvent>();
+
     ThreadSpawnConfiguration {
         name: Some("draw_thread\0".as_bytes()),
         ..Default::default()
@@ -44,7 +46,7 @@ fn main() {
 
     let draw_thread = thread::Builder::new()
         .stack_size(8192)
-        .spawn(move || draw::draw_thread(d0, d1, res, sdi, dc, cs, cs2, spi2))
+        .spawn(move || draw::draw_thread(rx, d0, d1, res, sdi, dc, cs, cs2, spi2))
         .unwrap();
 
     ThreadSpawnConfiguration {
@@ -57,7 +59,13 @@ fn main() {
     let mqtt_thread = thread::Builder::new()
         .stack_size(8192)
         .spawn(move || {
-            block_on(mqtt::mqtt_thread(peripherals.modem, sys_loop, timer, nvs));
+            block_on(mqtt::mqtt_thread(
+                tx,
+                peripherals.modem,
+                sys_loop,
+                timer,
+                nvs,
+            ));
         })
         .unwrap();
 

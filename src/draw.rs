@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{sync::mpsc::Receiver, thread, time::Duration};
 
 use embedded_graphics::{
     geometry::Point,
@@ -14,7 +14,10 @@ use esp_idf_svc::hal::{
 };
 use ssd1306::{prelude::*, Ssd1306};
 
+use crate::state::StateEvent;
+
 pub fn draw_thread(
+    rx: Receiver<StateEvent>,
     d0: Gpio22,
     d1: Gpio21,
     res: Gpio17,
@@ -61,6 +64,12 @@ pub fn draw_thread(
     display.flush().unwrap();
 
     loop {
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                StateEvent::TramStateChanged(tram) => {}
+                _ => {}
+            }
+        }
         thread::sleep(Duration::from_secs(1));
     }
 }
