@@ -1,5 +1,6 @@
 use std::{sync::mpsc::Receiver, thread, time::Duration};
 
+use chrono::{DateTime, FixedOffset, SubsecRound, TimeZone};
 use embedded_graphics::{
     geometry::Point,
     mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
@@ -38,6 +39,7 @@ struct Display<'a> {
     metro: Option<Metro>,
     wifi_connected: bool,
     mqtt_connected: bool,
+    time_synced: bool,
     dev: Option<DisplayDevice<'a>>,
 }
 
@@ -65,6 +67,9 @@ impl<'a> Display<'a> {
             StateEvent::MqttConnected(b) => {
                 self.mqtt_connected = b;
             }
+            StateEvent::TimeSynced(b) => {
+                self.time_synced = b;
+            }
         }
     }
 
@@ -72,9 +77,9 @@ impl<'a> Display<'a> {
         loop {
             while let Ok(event) = rx.try_recv() {
                 self.update_state(event);
-                self.redraw();
             }
-            thread::sleep(Duration::from_secs(1));
+            self.redraw();
+            thread::sleep(Duration::from_millis(100));
         }
     }
 
@@ -123,16 +128,31 @@ impl<'a> Display<'a> {
     }
 
     fn draw_tram(&mut self) {
+        if !self.time_synced {
+            return;
+        }
+
         let dev = self.dev.as_mut().unwrap();
 
         if let Some(tram) = &self.tram {
-            if let Some(time_left_ms) = tram.time_left_ms {
-                let time_left = chrono::Duration::from_std(Duration::from_millis(time_left_ms))
-                    .unwrap()
-                    .num_minutes();
+            if let Some(depart_at) = tram.depart_at {
+                let time_left_seconds = depart_at
+                    .round_subsecs(0)
+                    .signed_duration_since(chrono::Utc::now())
+                    .num_seconds();
+
+                if time_left_seconds <= 0 {
+                    Text::with_baseline("Tram: now", Point::new(0, 20), STYLE, Baseline::Top)
+                        .draw(dev)
+                        .unwrap();
+                    return;
+                }
+
+                let time_left_human =
+                    humantime::format_duration(Duration::from_secs(time_left_seconds as u64));
 
                 Text::with_baseline(
-                    &format!("Tram: {}", time_left),
+                    &format!("Tram: {}", time_left_human),
                     Point::new(0, 20),
                     STYLE,
                     Baseline::Top,
@@ -149,9 +169,14 @@ impl<'a> Display<'a> {
     }
 
     fn draw_time(&mut self) {
+        if !self.time_synced {
+            return;
+        }
+
         let dev = self.dev.as_mut().unwrap();
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(3600).unwrap());
+
         let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         Text::with_baseline(&time, Point::new(0, 30), STYLE, Baseline::Top)

@@ -5,6 +5,7 @@ use esp_idf_svc::{
     hal::modem::Modem,
     mqtt::client::{EspMqttClient, Message, MessageImpl, MqttClientConfiguration},
     nvs::EspDefaultNvsPartition,
+    sntp::EspSntp,
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, ClientConfiguration, EspWifi},
 };
@@ -46,6 +47,12 @@ pub async fn mqtt_thread(
             wifi.wait_netif_up().await.unwrap();
             tx.send(StateEvent::WifiConnected(true)).unwrap();
         }
+
+        let ntp = EspSntp::new_default().unwrap();
+        while ntp.get_sync_status() != esp_idf_svc::sntp::SyncStatus::Completed {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        tx.send(StateEvent::TimeSynced(true)).unwrap();
 
         let config = MqttClientConfiguration {
             client_id: MQTT_CLIENT_ID.into(),
