@@ -6,6 +6,9 @@ edition = "2021"
 resolver = "2"
 rust-version = "1.71"
 
+[package.metadata.espflash]
+partition_table = "partitions.csv"
+
 [profile.release]
 opt-level = "s"
 
@@ -37,6 +40,7 @@ serde = "1.0.197"
 serde_json = "1.0.114"
 chrono = { version = "0.4.35", features = ["serde"] }
 humantime = "2.1.0"
+esp-ota = "0.2.0"
 
 [build-dependencies]
 anyhow = "1.0.81"
