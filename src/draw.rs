@@ -7,19 +7,23 @@ use embedded_graphics::{
     prelude::*,
     text::{Baseline, Text},
 };
-use esp_idf_svc::hal::spi::{config::DriverConfig, SpiDeviceDriver, SpiDriver, SPI2};
 use esp_idf_svc::hal::{gpio::PinDriver, prelude::*, spi::config::Config};
+use esp_idf_svc::hal::{
+    gpio::{Gpio16, Gpio17, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26},
+    spi::{config::DriverConfig, SpiDeviceDriver, SpiDriver, SPI2},
+};
 use ssd1306::{prelude::*, Ssd1306};
 
-pub fn draw_thread(peripherals: esp_idf_svc::hal::peripherals::Peripherals) {
-    let d0 = peripherals.pins.gpio22;
-    let d1 = peripherals.pins.gpio21;
-    let res = peripherals.pins.gpio17;
-    let sdi = peripherals.pins.gpio23;
-    let dc = peripherals.pins.gpio16;
-    let cs = peripherals.pins.gpio25;
-    let cs2 = peripherals.pins.gpio26;
-
+pub fn draw_thread(
+    d0: Gpio22,
+    d1: Gpio21,
+    res: Gpio17,
+    sdi: Gpio23,
+    dc: Gpio16,
+    cs: Gpio25,
+    cs2: Gpio26,
+    spi: SPI2,
+) {
     let mut res = PinDriver::output(res).unwrap();
     res.set_high().unwrap();
 
@@ -27,14 +31,7 @@ pub fn draw_thread(peripherals: esp_idf_svc::hal::peripherals::Peripherals) {
     dc.set_low().unwrap();
 
     let spi_driver = Box::leak(Box::new(
-        SpiDriver::new::<SPI2>(
-            peripherals.spi2,
-            d0,
-            d1,
-            Some(sdi),
-            &DriverConfig::default(),
-        )
-        .unwrap(),
+        SpiDriver::new(spi, d0, d1, Some(sdi), &DriverConfig::default()).unwrap(),
     ));
 
     let config = Config::new().baudrate(100.kHz().into()).write_only(true);
