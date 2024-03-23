@@ -1,31 +1,26 @@
 use std::{sync::mpsc::Receiver, thread, time::Duration};
 
-use chrono::{DateTime, FixedOffset, SubsecRound, TimeZone};
+use chrono::SubsecRound;
 use embedded_graphics::{
     geometry::Point,
+    image::{Image, ImageRaw},
     mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
 };
-use esp_idf_svc::hal::{gpio::PinDriver, prelude::*, spi::config::Config};
-use esp_idf_svc::hal::{
-    gpio::{Gpio16, Gpio17, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26},
-    spi::{config::DriverConfig, SpiDeviceDriver, SpiDriver, SPI2},
-};
+use esp_idf_svc::hal::gpio::{Gpio16, Gpio17, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26};
+use esp_idf_svc::hal::i2c::I2C0;
+use esp_idf_svc::hal::prelude::*;
+use esp_idf_svc::hal::spi::SPI2;
 use ssd1306::{prelude::*, Ssd1306};
 
 use crate::state::{Metro, StateEvent, Tram};
 
-type DisplayDevice<'a> = Ssd1306<
-    SPIInterface<
-        SpiDeviceDriver<'a, &'a mut SpiDriver<'a>>,
-        PinDriver<'a, Gpio16, esp_idf_svc::hal::gpio::Output>,
-        PinDriver<'a, Gpio25, esp_idf_svc::hal::gpio::Output>,
-    >,
-    DisplaySize128x64,
-    ssd1306::mode::BufferedGraphicsMode<DisplaySize128x64>,
->;
+const NO_WIFI: &[u8] = include_bytes!("../assets/no_wifi.raw");
+
+type DisplayDevice<DI> =
+    Ssd1306<DI, DisplaySize128x64, ssd1306::mode::BufferedGraphicsMode<DisplaySize128x64>>;
 
 const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .font(&FONT_6X10)
@@ -33,21 +28,27 @@ const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .background_color(BinaryColor::Off)
     .build();
 
-#[derive(Default)]
-struct Display<'a> {
+struct Display<DI> {
     tram: Option<Tram>,
     metro: Option<Metro>,
     wifi_connected: bool,
     mqtt_connected: bool,
     time_synced: bool,
-    dev: Option<DisplayDevice<'a>>,
+    dev: Option<DisplayDevice<DI>>,
 }
 
-impl<'a> Display<'a> {
-    fn new(dev: DisplayDevice<'a>) -> Self {
+impl<DI> Display<DI>
+where
+    DI: WriteOnlyDataCommand,
+{
+    fn new(dev: DisplayDevice<DI>) -> Self {
         let mut this = Self {
+            tram: None,
+            metro: None,
+            wifi_connected: false,
+            mqtt_connected: false,
+            time_synced: false,
             dev: Some(dev),
-            ..Default::default()
         };
         this.redraw();
         this
@@ -95,17 +96,18 @@ impl<'a> Display<'a> {
     }
 
     fn draw_wifi(&mut self) {
+        if self.wifi_connected {
+            return;
+        }
         let dev = self.dev.as_mut().unwrap();
 
-        if self.wifi_connected {
-            Text::with_baseline("WIFI: connected", Point::new(0, 0), STYLE, Baseline::Top)
-                .draw(dev)
-                .unwrap();
-        } else {
-            Text::with_baseline("WIFI: disconnected", Point::new(0, 0), STYLE, Baseline::Top)
-                .draw(dev)
-                .unwrap();
-        }
+        Text::with_baseline("WIFI: disconnected", Point::new(0, 0), STYLE, Baseline::Top)
+            .draw(dev)
+            .unwrap();
+
+        let image_raw: ImageRaw<BinaryColor> = ImageRaw::new(NO_WIFI, 50);
+        let image = Image::with_center(&image_raw, dev.bounding_box().center());
+        image.draw(dev).unwrap();
     }
 
     fn draw_mqtt(&mut self) {
@@ -185,6 +187,7 @@ impl<'a> Display<'a> {
     }
 }
 
+#[cfg(not(feature = "simulated"))]
 pub fn draw_thread(
     rx: Receiver<StateEvent>,
     d0: Gpio22,
@@ -195,7 +198,16 @@ pub fn draw_thread(
     cs: Gpio25,
     cs2: Gpio26,
     spi: SPI2,
+    _i2c: I2C0,
 ) {
+    use esp_idf_svc::hal::{
+        gpio::PinDriver,
+        spi::{
+            config::{Config, DriverConfig},
+            SpiDeviceDriver, SpiDriver,
+        },
+    };
+
     let mut res = PinDriver::output(res).unwrap();
     res.set_high().unwrap();
 
@@ -214,6 +226,34 @@ pub fn draw_thread(
     let interface = ssd1306::prelude::SPIInterface::new(spi_device, dc, cs);
     let mut display_device = Ssd1306::new(
         interface,
+        DisplaySize128x64,
+        ssd1306::rotation::DisplayRotation::Rotate0,
+    )
+    .into_buffered_graphics_mode();
+    display_device.init().unwrap();
+
+    let mut display = Display::new(display_device);
+    display.event_loop(rx);
+}
+
+#[cfg(feature = "simulated")]
+pub fn draw_thread(
+    rx: Receiver<StateEvent>,
+    d0: Gpio22,
+    d1: Gpio21,
+    _res: Gpio17,
+    _sdi: Gpio23,
+    _dc: Gpio16,
+    _cs: Gpio25,
+    _cs2: Gpio26,
+    _spi: SPI2,
+    i2c: I2C0,
+) {
+    let config = esp_idf_svc::hal::i2c::I2cConfig::new().baudrate(10.kHz().into());
+    let i2c = esp_idf_svc::hal::i2c::I2cDriver::new(i2c, d1, d0, &config).unwrap();
+    let i2c = ssd1306::I2CDisplayInterface::new(i2c);
+    let mut display_device = Ssd1306::new(
+        i2c,
         DisplaySize128x64,
         ssd1306::rotation::DisplayRotation::Rotate0,
     )

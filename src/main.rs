@@ -9,11 +9,18 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     timer::EspTaskTimerService,
 };
+
 mod draw;
+#[cfg(not(feature = "simulated"))]
 mod mqtt;
+#[cfg(feature = "simulated")]
+mod simulated_mqtt;
 mod state;
 
 fn main() {
+    #[cfg(feature = "simulated")]
+    use simulated_mqtt as mqtt;
+
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -34,6 +41,7 @@ fn main() {
     let cs = peripherals.pins.gpio25;
     let cs2 = peripherals.pins.gpio26;
     let spi2 = peripherals.spi2;
+    let i2c0 = peripherals.i2c0;
 
     let (tx, rx) = mpsc::channel::<state::StateEvent>();
 
@@ -46,7 +54,7 @@ fn main() {
 
     let draw_thread = thread::Builder::new()
         .stack_size(8192)
-        .spawn(move || draw::draw_thread(rx, d0, d1, res, sdi, dc, cs, cs2, spi2))
+        .spawn(move || draw::draw_thread(rx, d0, d1, res, sdi, dc, cs, cs2, spi2, i2c0))
         .unwrap();
 
     ThreadSpawnConfiguration {

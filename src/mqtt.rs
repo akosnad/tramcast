@@ -9,7 +9,6 @@ use esp_idf_svc::{
     },
     nvs::EspDefaultNvsPartition,
     sntp::EspSntp,
-    sys::id_t,
     timer::EspTaskTimerService,
     wifi::{AsyncWifi, ClientConfiguration, EspWifi},
 };
@@ -67,6 +66,7 @@ pub async fn mqtt_thread(
 
         let mut ota: Option<esp_ota::OtaUpdate> = None;
 
+        #[allow(unreachable_code)]
         while let Some(msg) = connection.next() {
             match msg {
                 Err(e) => log::error!("MQTT Error: {:?}", e),

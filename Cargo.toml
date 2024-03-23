@@ -29,6 +29,7 @@ embassy = [
   "esp-idf-svc/critical-section",
   "esp-idf-svc/embassy-time-driver",
 ]
+simulated = []
 
 [dependencies]
 log = { version = "0.4", default-features = false }
