@@ -1,4 +1,8 @@
-use std::{sync::mpsc::Receiver, thread, time::Duration};
+use std::{
+    sync::mpsc::Receiver,
+    thread,
+    time::{Duration, Instant},
+};
 
 use chrono::SubsecRound;
 use embedded_graphics::{
@@ -7,7 +11,7 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
-    text::{Baseline, Text},
+    text::{Alignment, Baseline, Text},
 };
 use esp_idf_svc::hal::gpio::{Gpio16, Gpio17, Gpio21, Gpio22, Gpio23, Gpio25, Gpio26};
 use esp_idf_svc::hal::i2c::I2C0;
@@ -28,6 +32,13 @@ const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .background_color(BinaryColor::Off)
     .build();
 
+enum Screen {
+    Tram,
+    DataNotAvailable,
+    Metro,
+    Weather,
+}
+
 struct Display<DI> {
     tram: Option<Tram>,
     metro: Option<Metro>,
@@ -35,6 +46,7 @@ struct Display<DI> {
     mqtt_connected: bool,
     time_synced: bool,
     dev: Option<DisplayDevice<DI>>,
+    screen: Screen,
 }
 
 impl<DI> Display<DI>
@@ -49,6 +61,7 @@ where
             mqtt_connected: false,
             time_synced: false,
             dev: Some(dev),
+            screen: Screen::DataNotAvailable,
         };
         this.redraw();
         this
@@ -74,59 +87,87 @@ where
         }
     }
 
-    fn event_loop(&mut self, rx: Receiver<StateEvent>) -> ! {
+    fn event_loop(mut self, rx: Receiver<StateEvent>) -> ! {
+        let mut last_screen_cycle = Instant::now();
         loop {
             while let Ok(event) = rx.try_recv() {
                 self.update_state(event);
+            }
+            if last_screen_cycle.elapsed() > Duration::from_secs(4) {
+                self.cycle_screen();
+                last_screen_cycle = Instant::now();
             }
             self.redraw();
             thread::sleep(Duration::from_millis(100));
         }
     }
 
+    fn cycle_screen(&mut self) {
+        if !self.wifi_connected || !self.mqtt_connected || !self.time_synced {
+            self.screen = Screen::DataNotAvailable;
+            return;
+        }
+
+        match self.screen {
+            Screen::Tram => {
+                self.screen = Screen::Metro;
+            }
+            Screen::Metro => {
+                self.screen = Screen::Weather;
+            }
+            Screen::Weather => {
+                self.screen = Screen::Tram;
+            }
+            Screen::DataNotAvailable => {
+                // If all data becomes available, start with the tram screen
+                self.screen = Screen::Tram;
+            }
+        }
+    }
+
     fn redraw(&mut self) {
         self.dev.as_mut().unwrap().clear(BinaryColor::Off).unwrap();
 
-        self.draw_wifi();
-        self.draw_mqtt();
-        self.draw_tram();
+        self.draw_screen();
         self.draw_time();
 
         self.dev.as_mut().unwrap().flush().unwrap();
     }
 
-    fn draw_wifi(&mut self) {
-        if self.wifi_connected {
-            return;
+    fn draw_screen(&mut self) {
+        match self.screen {
+            Screen::Tram => {
+                self.draw_tram();
+            }
+            Screen::Metro => {
+                self.draw_metro();
+            }
+            Screen::Weather => {
+                self.draw_weather();
+            }
+            Screen::DataNotAvailable => {
+                self.draw_data_not_available();
+            }
         }
-        let dev = self.dev.as_mut().unwrap();
-
-        Text::with_baseline("WIFI: disconnected", Point::new(0, 0), STYLE, Baseline::Top)
-            .draw(dev)
-            .unwrap();
-
-        let image_raw: ImageRaw<BinaryColor> = ImageRaw::new(NO_WIFI, 50);
-        let image = Image::with_center(&image_raw, dev.bounding_box().center());
-        image.draw(dev).unwrap();
     }
 
-    fn draw_mqtt(&mut self) {
+    fn draw_time(&mut self) {
+        if !self.time_synced {
+            return;
+        }
+
         let dev = self.dev.as_mut().unwrap();
 
-        if self.mqtt_connected {
-            Text::with_baseline("MQTT: connected", Point::new(0, 10), STYLE, Baseline::Top)
-                .draw(dev)
-                .unwrap();
-        } else {
-            Text::with_baseline(
-                "MQTT: disconnected",
-                Point::new(0, 10),
-                STYLE,
-                Baseline::Top,
-            )
+        let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(3600).unwrap());
+
+        let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let center = dev.bounding_box().center();
+        let top_center = Point::new(center.x, 0) + FONT_6X10.character_size.y_axis();
+
+        Text::with_alignment(&time, top_center, STYLE, Alignment::Center)
             .draw(dev)
             .unwrap();
-        }
     }
 
     fn draw_tram(&mut self) {
@@ -170,20 +211,93 @@ where
             .unwrap();
     }
 
-    fn draw_time(&mut self) {
-        if !self.time_synced {
-            return;
-        }
-
+    fn draw_metro(&mut self) {
         let dev = self.dev.as_mut().unwrap();
 
-        let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(3600).unwrap());
+        if let Some(metro) = &self.metro {
+            if let Some(depart_at) = metro.depart_at {
+                let time_left_seconds = depart_at
+                    .round_subsecs(0)
+                    .signed_duration_since(chrono::Utc::now())
+                    .num_seconds();
 
-        let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+                if time_left_seconds <= 0 {
+                    Text::with_baseline("Metro: now", Point::new(0, 20), STYLE, Baseline::Top)
+                        .draw(dev)
+                        .unwrap();
+                    return;
+                }
 
-        Text::with_baseline(&time, Point::new(0, 30), STYLE, Baseline::Top)
+                let time_left_human =
+                    humantime::format_duration(Duration::from_secs(time_left_seconds as u64));
+
+                Text::with_baseline(
+                    &format!("Metro: {}", time_left_human),
+                    Point::new(0, 20),
+                    STYLE,
+                    Baseline::Top,
+                )
+                .draw(dev)
+                .unwrap();
+            }
+        } else {
+            Text::with_baseline("Metro: N/A", Point::new(0, 20), STYLE, Baseline::Top)
+                .draw(dev)
+                .unwrap();
+        }
+    }
+
+    fn draw_weather(&mut self) {
+        let dev = self.dev.as_mut().unwrap();
+
+        Text::with_baseline("Weather: N/A", Point::new(0, 20), STYLE, Baseline::Top)
             .draw(dev)
             .unwrap();
+    }
+
+    fn draw_data_not_available(&mut self) {
+        let dev = self.dev.as_mut().unwrap();
+
+        let center = dev.bounding_box().center();
+        let bottom_center = Point::new(center.x, 64) - FONT_6X10.character_size.y_axis()
+            + Point::new(0, FONT_6X10.baseline as i32).y_axis();
+
+        if !self.wifi_connected {
+            Text::with_alignment(
+                "Connecting WiFi...",
+                bottom_center,
+                STYLE,
+                Alignment::Center,
+            )
+            .draw(dev)
+            .unwrap();
+
+            let image_raw: ImageRaw<BinaryColor> = ImageRaw::new(NO_WIFI, 50);
+            let image = Image::with_center(&image_raw, center);
+            image.draw(dev).unwrap();
+        } else if !self.mqtt_connected {
+            Text::with_alignment(
+                "Connecting MQTT...",
+                bottom_center,
+                STYLE,
+                Alignment::Center,
+            )
+            .draw(dev)
+            .unwrap();
+        } else if !self.time_synced {
+            Text::with_alignment("Syncing time...", bottom_center, STYLE, Alignment::Center)
+                .draw(dev)
+                .unwrap();
+        } else {
+            Text::with_alignment(
+                "Waiting for data...",
+                bottom_center,
+                STYLE,
+                Alignment::Center,
+            )
+            .draw(dev)
+            .unwrap();
+        }
     }
 }
 
@@ -232,7 +346,7 @@ pub fn draw_thread(
     .into_buffered_graphics_mode();
     display_device.init().unwrap();
 
-    let mut display = Display::new(display_device);
+    let display = Display::new(display_device);
     display.event_loop(rx);
 }
 
@@ -260,6 +374,6 @@ pub fn draw_thread(
     .into_buffered_graphics_mode();
     display_device.init().unwrap();
 
-    let mut display = Display::new(display_device);
+    let display = Display::new(display_device);
     display.event_loop(rx);
 }
