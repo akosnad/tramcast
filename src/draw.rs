@@ -8,7 +8,9 @@ use chrono::SubsecRound;
 use embedded_graphics::{
     geometry::Point,
     image::{Image, ImageRaw},
-    mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{
+        self, ascii::FONT_10X20, ascii::FONT_6X10, MonoFont, MonoTextStyle, MonoTextStyleBuilder,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Baseline, Text},
@@ -22,12 +24,35 @@ use ssd1306::{prelude::*, Ssd1306};
 use crate::state::{Metro, StateEvent, Tram};
 
 const NO_WIFI: &[u8] = include_bytes!("../assets/no_wifi.raw");
+const TRAM: &[u8] = include_bytes!("../assets/tram.raw");
 
 type DisplayDevice<DI> =
     Ssd1306<DI, DisplaySize128x64, ssd1306::mode::BufferedGraphicsMode<DisplaySize128x64>>;
 
 const STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .font(&FONT_6X10)
+    .text_color(BinaryColor::On)
+    .background_color(BinaryColor::Off)
+    .build();
+
+const FONT_20X40: MonoFont<'static> = MonoFont {
+    image: ImageRaw::new(include_bytes!("../assets/font_20x40.raw"), 320),
+    glyph_mapping: &mono_font::mapping::ASCII,
+    character_size: Size::new(20, 40),
+    character_spacing: 0,
+    baseline: 30,
+    underline: mono_font::DecorationDimensions::new(30 + 4, 2),
+    strikethrough: mono_font::DecorationDimensions::new(40 / 2, 2),
+};
+
+const BIG_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
+    .font(&FONT_20X40)
+    .text_color(BinaryColor::On)
+    .background_color(BinaryColor::Off)
+    .build();
+
+const MEDIUM_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
+    .font(&FONT_10X20)
     .text_color(BinaryColor::On)
     .background_color(BinaryColor::Off)
     .build();
@@ -110,7 +135,8 @@ where
 
         match self.screen {
             Screen::Tram => {
-                self.screen = Screen::Metro;
+                // TODO: implement other screens
+                //self.screen = Screen::Metro;
             }
             Screen::Metro => {
                 self.screen = Screen::Weather;
@@ -163,7 +189,8 @@ where
         let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         let center = dev.bounding_box().center();
-        let top_center = Point::new(center.x, 0) + FONT_6X10.character_size.y_axis();
+        let top_center =
+            Point::new(center.x, 0) + FONT_6X10.character_size.y_axis() - Point::new(0, 4).y_axis();
 
         Text::with_alignment(&time, top_center, STYLE, Alignment::Center)
             .draw(dev)
@@ -176,6 +203,7 @@ where
         }
 
         let dev = self.dev.as_mut().unwrap();
+        let pos = Point::new(4 + 27 / 2, 0) + dev.bounding_box().center().y_axis();
 
         if let Some(tram) = &self.tram {
             if let Some(depart_at) = tram.depart_at {
@@ -185,23 +213,34 @@ where
                     .num_seconds();
 
                 if time_left_seconds <= 0 {
-                    Text::with_baseline("Tram: now", Point::new(0, 20), STYLE, Baseline::Top)
+                    Text::with_baseline("now", Point::new(0, 20), STYLE, Baseline::Top)
                         .draw(dev)
                         .unwrap();
                     return;
                 }
 
-                let time_left_human =
-                    humantime::format_duration(Duration::from_secs(time_left_seconds as u64));
+                let image_raw: ImageRaw<BinaryColor> = ImageRaw::new(TRAM, 27);
+                let image = Image::with_center(&image_raw, pos);
+                image.draw(dev).unwrap();
 
                 Text::with_baseline(
-                    &format!("Tram: {}", time_left_human),
-                    Point::new(0, 20),
-                    STYLE,
-                    Baseline::Top,
+                    &format!("{:02}", time_left_seconds / 60),
+                    Point::new(38, 55),
+                    BIG_STYLE,
+                    Baseline::Bottom,
                 )
                 .draw(dev)
                 .unwrap();
+
+                Text::with_alignment(
+                    &format!(": {:02}", time_left_seconds % 60),
+                    Point::new(128, 47),
+                    MEDIUM_STYLE,
+                    Alignment::Right,
+                )
+                .draw(dev)
+                .unwrap();
+
                 return;
             }
         }
