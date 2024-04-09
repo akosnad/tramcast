@@ -5,6 +5,8 @@ use std::{
 };
 
 use chrono::SubsecRound;
+use chrono::TimeZone;
+use chrono_tz::Europe::Budapest;
 use embedded_graphics::{
     geometry::Point,
     image::{Image, ImageRaw},
@@ -184,7 +186,8 @@ where
 
         let dev = self.dev.as_mut().unwrap();
 
-        let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(3600).unwrap());
+        let now_utc = chrono::Utc::now();
+        let now = Budapest.from_utc_datetime(&now_utc.naive_utc());
 
         let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
